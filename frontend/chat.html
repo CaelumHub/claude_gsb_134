@@ -290,7 +290,8 @@ async function main() {
     loadingOlder = true;
     const prevHeight = $list.scrollHeight;
     try {
-      const data = await Api.chat.list(currentBoardId, { before: messages[0].ts, limit: 100 });
+      const first = messages[0];
+      const data = await Api.chat.list(currentBoardId, { before: first.ts, before_id: first.id, limit: 100 });
       hasMore = !!data.has_more;
       messages = [...(data.messages || []), ...messages];
       renderAll();

@@ -5,7 +5,7 @@ import asyncio
 import os
 import secrets
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -59,36 +59,47 @@ async def append_message(board_id: str, user: Dict[str, Any], text: str,
 
 
 def load_messages(board_id: str, before_ts: Optional[int] = None,
-                  limit: int = 100) -> List[Dict[str, Any]]:
-    """倒序分页拉取(返回前再翻正序): before_ts 之前的 limit 条。"""
+                  limit: int = 100,
+                  before_id: Optional[str] = None) -> Tuple[List[Dict[str, Any]], bool]:
+    """倒序分页拉取(返回前再翻正序): 游标 (before_ts, before_id) 之前的 limit 条。
+
+    返回 (messages, has_more)。分片名由消息 ts 决定(按天), 故分片字典序即
+    时间序, 且较早分片中的消息 ts 一定严格小于较晚分片。从最新分片向前扫,
+    扫描时逐条按游标过滤, 收满 limit+1 条(多 1 条用于精确判定 has_more)
+    即可停 —— 停止条件只统计过滤后的消息, 不会单日消息多就漏扫更早的分片。
+    """
     log = _log_for(board_id)
-    all_msgs: List[Dict[str, Any]] = []
     shards = log.list_shards()
     if before_ts is not None:
         # 只扫可能包含更早消息的分片(分片名=日期)
         day = datetime.fromtimestamp(before_ts / 1000.0).strftime("%Y%m%d")
         shards = [s for s in shards if s[len("chat-"): -len(".jsonl")] <= day]
+    cursor = (before_ts, before_id or "") if before_ts is not None else None
+    collected: List[Dict[str, Any]] = []
     for name in reversed(shards):
-        all_msgs.extend(log.read_shard(name))
-        if before_ts is not None and len(all_msgs) >= limit * 3:
-            break
-        if before_ts is None and len(all_msgs) >= limit * 3:
-            break
-    all_msgs.sort(key=lambda m: m.get("id") or "")
-    if before_ts is not None:
-        all_msgs = [m for m in all_msgs if (m.get("ts") or 0) < before_ts]
-    return all_msgs[-limit:]
+        for m in log.read_shard(name):
+            if cursor is None or (m.get("ts") or 0, m.get("id") or "") < cursor:
+                collected.append(m)
+        if len(collected) > limit:
+            break   # 已收满 limit+1 条, 更早的分片不可能进入本页窗口
+    collected.sort(key=lambda m: (m.get("ts") or 0, m.get("id") or ""))
+    has_more = len(collected) > limit
+    if has_more:
+        collected = collected[-limit:]
+    return collected, has_more
 
 
 @router.get("/{board_id}/chat")
 async def get_chat(board_id: str,
                    before: Optional[int] = Query(default=None),
+                   before_id: Optional[str] = Query(default=None),
                    limit: int = Query(default=100, ge=1, le=500),
                    user: Dict[str, Any] = Depends(auth.current_user)):
     await board_ctx(board_id, user, "viewer")
     loop = asyncio.get_running_loop()
-    messages = await loop.run_in_executor(None, load_messages, board_id, before, limit)
-    return {"messages": messages, "has_more": len(messages) >= limit}
+    messages, has_more = await loop.run_in_executor(
+        None, load_messages, board_id, before, limit, before_id)
+    return {"messages": messages, "has_more": has_more}
 
 
 @router.post("/{board_id}/chat")
