@@ -379,7 +379,7 @@ class ConnectionManager:
         text = str(msg.get("text") or "").strip()
         if not text:
             return
-        message = await chat_mod.append_message(client.board_id, client.user, text, kind="system")
+        message = await chat_mod.append_message(client.board_id, client.user, text, kind="msg")
         await self.broadcast(client.board_id, {"type": "chat", "message": message})
 
     # ------------------------------------------------------------ presence

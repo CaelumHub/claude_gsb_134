@@ -429,16 +429,20 @@ async function download() {
 async function exportChat() {
   if (!state.boardId) { toast('请先选择白板', 'warn'); return; }
   try {
-    let before = null; const all = [];
+    let before = null, beforeId = null; const all = [];
     for (let i = 0; i < 60; i++) {
-      const data = await Api.chat.list(state.boardId, { limit: 500, before });
+      const data = await Api.chat.list(state.boardId, { limit: 500, before, before_id: beforeId });
       all.unshift(...(data.messages || []));
       if (!data.has_more || !data.messages?.length) break;
       before = data.messages[0].ts;
+      beforeId = data.messages[0].id;
     }
+    // 跨页边界可能与实时新增重叠: 按 id 去重后重排, 保证时间序正确
+    const dedup = [...new Map(all.map((m) => [m.id, m])).values()]
+      .sort((a, b) => (a.ts - b.ts) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const payload = {
       format: 'coboard-chat-export', board: { id: state.boardId, name: state.board.board?.name },
-      exported_at: Date.now(), exported_by: getMe()?.username, count: all.length, messages: all,
+      exported_at: Date.now(), exported_by: getMe()?.username, count: dedup.length, messages: dedup,
     };
     saveBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
       `${safeName(state.board.board?.name)}-chat.json`);
